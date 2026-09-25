@@ -1,0 +1,523 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:table_calendar/table_calendar.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  try {
+    final String configString = await rootBundle.loadString('assets/config.json');
+    final Map<String, dynamic> config = jsonDecode(configString);
+
+    await Supabase.initialize(
+      url: config['supabaseUrl'] ?? '',  
+      anonKey: config['supabaseAnonKey'] ?? '',  
+    );
+
+    // Ping de prueba a la base de datos
+    await supabase.from('reservas').select('id').limit(1);
+    print('✅ [Supabase] Conexión establecida con éxito.');
+  } catch (e) {
+    print('❌ [Supabase] Error de conexión: $e');
+  }
+
+  runApp(const ReservaAulasApp());
+}
+
+final supabase = Supabase.instance.client;
+
+class ReservaAulasApp extends StatelessWidget {
+  const ReservaAulasApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Reserva de Aulas',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueAccent),
+        useMaterial3: true,
+      ),
+      home: const SeleccionRolScreen(),
+    );
+  }
+}
+
+// --- PANTALLA DE INICIO ---
+class SeleccionRolScreen extends StatelessWidget {
+  const SeleccionRolScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.school, size: 80, color: Colors.blueAccent),
+            const SizedBox(height: 20),
+            const Text('Gestión de Aulas', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 50),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.person),
+              label: const Text('Soy Cliente (Profesor)'),
+              style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(20), minimumSize: const Size(250, 60)),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ClienteLoginScreen())),
+            ),
+            const SizedBox(height: 20),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.admin_panel_settings),
+              label: const Text('Soy Técnico'),
+              style: OutlinedButton.styleFrom(padding: const EdgeInsets.all(20), minimumSize: const Size(250, 60)),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TecnicoLoginScreen())),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- PANTALLA CLIENTE (Identificación) ---
+class ClienteLoginScreen extends StatefulWidget {
+  const ClienteLoginScreen({super.key});
+  @override
+  State<ClienteLoginScreen> createState() => _ClienteLoginScreenState();
+}
+
+class _ClienteLoginScreenState extends State<ClienteLoginScreen> {
+  final _nombreController = TextEditingController();
+
+  void _entrar() {
+    if (_nombreController.text.isNotEmpty) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => CalendarioReservaScreen(nombreProfesor: _nombreController.text),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Identificación')),
+      body: Padding(
+        padding: const EdgeInsets.all(32.0),
+        child: Column(
+          children: [
+            TextField(
+              controller: _nombreController,
+              decoration: const InputDecoration(labelText: 'Nombre del Profesor', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(onPressed: _entrar, child: const Text('Entrar al Panel de Reservas'))
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- PANTALLA: PROFESOR CON PESTAÑAS POR AULA (TRAMOS HORARIOS) ---
+class CalendarioReservaScreen extends StatefulWidget {
+  final String nombreProfesor;
+  const CalendarioReservaScreen({super.key, required this.nombreProfesor});
+
+  @override
+  State<CalendarioReservaScreen> createState() => _CalendarioReservaScreenState();
+}
+
+class _CalendarioReservaScreenState extends State<CalendarioReservaScreen> {
+  DateTime _focusedDay = DateTime.now();
+  
+  DateTime? _selectedDayAulaA;
+  DateTime? _selectedDayAulaB;
+
+  String? _selectedHoraAulaA;
+  String? _selectedHoraAulaB;
+  
+  Set<DateTime> _diasBloqueadosTotales = {};
+  
+  // Mapa estructural: { Fecha: { Hora: TipoReservante } }
+  Map<DateTime, Map<String, String>> _ocupacionAulaA = {};
+  Map<DateTime, Map<String, String>> _ocupacionAulaB = {};
+  bool _cargando = true;
+
+  // Tramos horarios establecidos
+  final List<String> _tramosManana = [
+    '8:30-9:20', '9:20-10:10', '10:10-11:00', '11:00-11:50', '12:20-13:10', '13:10-14:00'
+  ];
+  final List<String> _tramosLunesTarde = [
+    '16:30-17:20', '17:20-18:10'
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarDatos();
+  }
+
+  Future<void> _cargarDatos() async {
+    try {
+      // 1. Cargar cierres completos del técnico
+      final bloqueadosData = await supabase.from('dias_bloqueados').select('fecha');
+      final Set<DateTime> bloqueadosFechas = {};
+      for (var row in bloqueadosData) {
+        DateTime fecha = DateTime.parse(row['fecha']);
+        bloqueadosFechas.add(DateTime(fecha.year, fecha.month, fecha.day));
+      }
+
+      // 2. Cargar horas reservadas
+      final reservasData = await supabase.from('reservas').select('fecha, aula, hora_inicio, nombre_cliente');
+      final Map<DateTime, Map<String, String>> ocA = {};
+      final Map<DateTime, Map<String, String>> ocB = {};
+
+      for (var row in reservasData) {
+        if (row['fecha'] == null || row['hora_inicio'] == null) continue;
+        DateTime fecha = DateTime.parse(row['fecha']);
+        DateTime normalized = DateTime(fecha.year, fecha.month, fecha.day);
+        String aula = row['aula'] ?? '';
+        String hora = row['hora_inicio'] ?? '';
+        String cliente = row['nombre_cliente'] ?? '';
+        
+        String tipo = (cliente.trim().toLowerCase() == widget.nombreProfesor.trim().toLowerCase()) 
+            ? 'propia' 
+            : 'ajena';
+        
+        if (aula == 'Aula A') {
+          ocA.putIfAbsent(normalized, () => {})[hora] = tipo;
+        } else if (aula == 'Aula B') {
+          ocB.putIfAbsent(normalized, () => {})[hora] = tipo;
+        }
+      }
+
+      setState(() {
+        _diasBloqueadosTotales = bloqueadosFechas;
+        _ocupacionAulaA = ocA;
+        _ocupacionAulaB = ocB;
+        _cargando = false;
+      });
+    } catch (e) {
+      setState(() => _cargando = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
+  List<String> _getTramosDisponibles(DateTime date) {
+    List<String> tramos = List.from(_tramosManana);
+    if (date.weekday == DateTime.monday) {
+      tramos.addAll(_tramosLunesTarde);
+    }
+    return tramos;
+  }
+
+  Future<void> _confirmarReserva(String aula, DateTime fecha, String tramo) async {
+    final String fechaString = fecha.toIso8601String().split('T')[0];
+    try {
+      await supabase.from('reservas').insert({
+        'aula': aula,
+        'fecha': fechaString,
+        'hora_inicio': tramo,
+        'nombre_cliente': widget.nombreProfesor,
+        'estado': 'aceptada'
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Reserva guardada: $tramo ($fechaString) 🎉'), backgroundColor: Colors.green)
+      );
+
+      setState(() {
+        if (aula == 'Aula A') _selectedHoraAulaA = null;
+        if (aula == 'Aula B') _selectedHoraAulaB = null;
+      });
+
+      _cargarDatos(); // Recarga y actualiza colores inmediatamente
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al guardar. Recuerda desactivar el RLS en Supabase: $e'), backgroundColor: Colors.redAccent)
+      );
+    }
+  }
+
+  bool _esDiaInvalidoCompletamente(DateTime day) {
+    if (day.weekday == DateTime.saturday || day.weekday == DateTime.sunday) return true;
+    
+    // Festivos Nacionales España
+    if ((day.month == 1 && day.day == 1) || (day.month == 1 && day.day == 6) ||
+        (day.month == 5 && day.day == 1) || (day.month == 8 && day.day == 15) ||
+        (day.month == 10 && day.day == 12) || (day.month == 11 && day.day == 1) ||
+        (day.month == 12 && day.day == 6) || (day.month == 12 && day.day == 8) ||
+        (day.month == 12 && day.day == 25)) return true;
+
+    return _diasBloqueadosTotales.contains(DateTime(day.year, day.month, day.day));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text('Profesor: ${widget.nombreProfesor}'),
+          bottom: const TabBar(
+            tabs: [
+              Tab(icon: Icon(Icons.meeting_room), text: 'Aula A'),
+              Tab(icon: Icon(Icons.door_front_door), text: 'Aula B'),
+            ],
+          ),
+        ),
+        body: _cargando 
+          ? const Center(child: CircularProgressIndicator())
+          : TabBarView(
+              children: [
+                _buildPanelAula('Aula A', _selectedDayAulaA, _selectedHoraAulaA, _ocupacionAulaA, 
+                  (date) => setState(() { _selectedDayAulaA = date; _selectedHoraAulaA = null; _focusedDay = date; }), 
+                  (hora) => setState(() => _selectedHoraAulaA = hora)),
+                _buildPanelAula('Aula B', _selectedDayAulaB, _selectedHoraAulaB, _ocupacionAulaB, 
+                  (date) => setState(() { _selectedDayAulaB = date; _selectedHoraAulaB = null; _focusedDay = date; }), 
+                  (hora) => setState(() => _selectedHoraAulaB = hora)),
+              ],
+            ),
+      ),
+    );
+  }
+
+  Widget _buildPanelAula(
+    String aula, 
+    DateTime? selectedDay, 
+    String? selectedHora, 
+    Map<DateTime, Map<String, String>> ocupacionMap,
+    Function(DateTime) onDaySelected,
+    Function(String) onHoraSelected
+  ) {
+    final normalizedSelected = selectedDay != null ? DateTime(selectedDay.year, selectedDay.month, selectedDay.day) : null;
+    final horasDelDia = selectedDay != null ? _getTramosDisponibles(selectedDay) : <String>[];
+    final Map<String, String> ocupacionHoras = ocupacionMap[normalizedSelected] ?? {};
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        children: [
+          TableCalendar(
+            firstDay: DateTime.now(),
+            lastDay: DateTime.now().add(const Duration(days: 90)),
+            focusedDay: _focusedDay,
+            startingDayOfWeek: StartingDayOfWeek.monday,
+            
+            // Lógica para que el día seleccionado se pinte de azul
+            selectedDayPredicate: (day) => isSameDay(selectedDay, day),
+            
+            // Días deshabilitados
+            enabledDayPredicate: (day) => !_esDiaInvalidoCompletamente(day),
+            
+            // Lógica para mostrar puntitos en días con reservas
+            eventLoader: (day) {
+              final normalized = DateTime(day.year, day.month, day.day);
+              if (ocupacionMap.containsKey(normalized) && ocupacionMap[normalized]!.isNotEmpty) {
+                return ['ocupado']; 
+              }
+              return [];
+            },
+            
+            onDaySelected: (sel, foc) {
+              onDaySelected(sel);
+            },
+            
+            calendarStyle: const CalendarStyle(
+              selectedDecoration: BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
+              todayDecoration: BoxDecoration(color: Colors.black12, shape: BoxShape.circle),
+              markerDecoration: BoxDecoration(color: Colors.deepOrange, shape: BoxShape.circle),
+            ),
+          ),
+          
+          if (selectedDay != null) ...[
+            const Divider(height: 40),
+            Text('Tramos para el ${selectedDay.toString().split(' ')[0]}:', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 15),
+            
+            // Botones de horas (Chips)
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: horasDelDia.map((tramo) {
+                final estado = ocupacionHoras[tramo];
+                bool esPropia = estado == 'propia';
+                bool esAjena = estado == 'ajena';
+                bool esElegidoLocal = selectedHora == tramo;
+
+                Color btnColor = Colors.grey.shade100;
+                Color textColor = Colors.black87;
+                VoidCallback? acciones = () => onHoraSelected(tramo);
+
+                if (esPropia) {
+                  btnColor = Colors.green;
+                  textColor = Colors.white;
+                  acciones = null; // Tuyo, inmodificable
+                } else if (esAjena) {
+                  btnColor = Colors.red.shade100;
+                  textColor = Colors.red.shade700;
+                  acciones = null; // De otro profesor
+                } else if (esElegidoLocal) {
+                  btnColor = Colors.blueAccent;
+                  textColor = Colors.white;
+                }
+
+                return Directionality(
+                  textDirection: TextDirection.ltr,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: btnColor,
+                      foregroundColor: textColor,
+                      elevation: esElegidoLocal ? 4 : 0,
+                      side: esElegidoLocal ? const BorderSide(color: Colors.blue, width: 2) : null
+                    ),
+                    onPressed: acciones,
+                    icon: Icon(
+                      esPropia ? Icons.check_circle : esAjena ? Icons.block : Icons.access_time, 
+                      size: 16,
+                      color: textColor
+                    ),
+                    label: Text(
+                      tramo, 
+                      style: TextStyle(
+                        decoration: esAjena ? TextDecoration.lineThrough : null,
+                        fontWeight: (esPropia || esElegidoLocal) ? FontWeight.bold : FontWeight.normal
+                      )
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+
+            if (selectedHora != null) ...[
+              const SizedBox(height: 30),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.bookmark_added),
+                label: Text('Reservar Tramo $selectedHora'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueAccent, 
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12)
+                ),
+                onPressed: () => _confirmarReserva(aula, selectedDay, selectedHora),
+              )
+            ]
+          ]
+        ],
+      ),
+    );
+  }
+}
+
+// --- PANTALLA TÉCNICO (Cero acceso a peticiones / Solo gestión de cierres completos) ---
+class PanelTecnicoScreen extends StatefulWidget {
+  const PanelTecnicoScreen({super.key});
+  @override
+  State<PanelTecnicoScreen> createState() => _PanelTecnicoScreenState();
+}
+
+class _PanelTecnicoScreenState extends State<PanelTecnicoScreen> {
+  List<Map<String, dynamic>> _diasBloqueados = [];
+  bool _cargando = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarDiasBloqueados();
+  }
+
+  Future<void> _cargarDiasBloqueados() async {
+    try {
+      final data = await supabase.from('dias_bloqueados').select('*').order('fecha', ascending: true);
+      setState(() {
+        _diasBloqueados = List<Map<String, dynamic>>.from(data);
+        _cargando = false;
+      });
+    } catch (e) {
+      setState(() => _cargando = false);
+    }
+  }
+
+  Future<void> _bloquearDia(BuildContext context) async {
+    final DateTime? elegido = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 90)),
+      helpText: 'BLOQUEAR DISPONIBILIDAD COMPLETA',
+    );
+    if (elegido != null) {
+      final String fecha = elegido.toIso8601String().split('T')[0];
+      try {
+        await supabase.from('dias_bloqueados').insert({'fecha': fecha});
+        _cargarDiasBloqueados();
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La fecha ya está bloqueada.')));
+      }
+    }
+  }
+
+  Future<void> _desbloquearDia(int id) async {
+    try {
+      await supabase.from('dias_bloqueados').delete().match({'id': id});
+      _cargarDiasBloqueados();
+    } catch (e) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Panel Técnico - Restricciones')),
+      body: _cargando
+          ? const Center(child: CircularProgressIndicator())
+          : _diasBloqueados.isEmpty
+              ? const Center(child: Text('No hay cierres manuales programados.', style: TextStyle(color: Colors.grey)))
+              : ListView.builder(
+                  itemCount: _diasBloqueados.length,
+                  itemBuilder: (context, index) {
+                    final d = _diasBloqueados[index];
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                      child: ListTile(
+                        leading: const Icon(Icons.lock_clock, color: Colors.orangeAccent),
+                        title: Text('${d['fecha']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: const Text('Bloqueo total del centro (ambas aulas)'),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
+                          onPressed: () => _desbloquearDia(d['id']),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _bloquearDia(context),
+        label: const Text('Inhabilitar Día Entero'),
+        icon: const Icon(Icons.add_moderator),
+        backgroundColor: Colors.orangeAccent,
+        foregroundColor: Colors.black87,
+      ),
+    );
+  }
+}
+
+class TecnicoLoginScreen extends StatelessWidget {
+  const TecnicoLoginScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Acceso Técnico')),
+      body: Center(
+        child: ElevatedButton.icon(
+          icon: const Icon(Icons.lock_open),
+          label: const Text('Entrar al Panel de Control'),
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PanelTecnicoScreen())),
+        )
+      )
+    );
+  }
+}

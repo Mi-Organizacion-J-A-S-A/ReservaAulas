@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'main.dart';
+import 'database_repository.dart';
 
 class CalendarioReservaScreen extends StatefulWidget {
   final String nombreProfesor;
@@ -99,7 +100,7 @@ class _CalendarioReservaScreenState extends State<CalendarioReservaScreen> {
 
   Future<void> _cargarDatos() async {
     try {
-      final bloqueadosData = await supabase.from('dias_bloqueados').select('fecha');
+      final bloqueadosData = await db.getDiasBloqueados();
       final Set<String> bloqueadosFechas = {};
       for (var row in bloqueadosData) {
         if (row['fecha'] != null) {
@@ -107,7 +108,7 @@ class _CalendarioReservaScreenState extends State<CalendarioReservaScreen> {
         }
       }
 
-      final reservasData = await supabase.from('reservas').select('id, fecha, aula, hora_inicio, nombre_cliente, estado, uso');
+      final reservasData = await db.getReservas();
       final Map<String, Map<String, dynamic>> cacheTemporal = {};
       final Set<String> diasOcupadosInfo1 = {};
       final Set<String> diasOcupadosInfo2 = {};
@@ -159,14 +160,14 @@ class _CalendarioReservaScreenState extends State<CalendarioReservaScreen> {
     final String horaInicioUi = _obtenerHoraInicioTramoUi(tramo);
     
     try {
-      final response = await supabase.from('reservas').insert({
+      final response = await db.crearReserva({
         'aula': aula.trim(),
         'fecha': fechaString,
         'hora_inicio': horaInicioDb,
         'nombre_cliente': widget.nombreProfesor.trim(),
         'estado': 'pendiente',
         'uso': _usoSeleccionado
-      }).select();
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Solicitud enviada para el tramo $tramo 🎉'), backgroundColor: Colors.orange));
       
@@ -190,7 +191,7 @@ class _CalendarioReservaScreenState extends State<CalendarioReservaScreen> {
 
   Future<void> _anularReservaPropia(dynamic id, String aula) async {
     try {
-      await supabase.from('reservas').delete().match({'id': id});
+      await db.anularReserva(id);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reserva anulada con éxito'), backgroundColor: Colors.green));
       _cargarDatos();
     } catch (e) {
@@ -391,3 +392,4 @@ class _CalendarioReservaScreenState extends State<CalendarioReservaScreen> {
     );
   }
 }
+

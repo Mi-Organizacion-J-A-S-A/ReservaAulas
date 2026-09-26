@@ -2,6 +2,7 @@ import 'dart:async'; // <-- AÑADIDO PARA StreamSubscription
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'main.dart';
+import 'database_repository.dart';
 
 class PanelTecnicoCalendarioScreen extends StatefulWidget {
   const PanelTecnicoCalendarioScreen({super.key});
@@ -31,7 +32,7 @@ class _PanelTecnicoCalendarioScreenState extends State<PanelTecnicoCalendarioScr
   List<Map<String, dynamic>> _listaPeticionesPendientes = [];
   bool _cargando = true;
 
-  // Suscripciones a streams de Supabase
+  // Suscripciones a streams
   StreamSubscription? _reservasSubscription;
   StreamSubscription? _bloqueadosSubscription;
 
@@ -166,7 +167,7 @@ class _PanelTecnicoCalendarioScreenState extends State<PanelTecnicoCalendarioScr
   // --- CARGA INICIAL DE DATOS ---
   Future<void> _cargarDatos() async {
     try {
-      final bloqueadosData = await supabase.from('dias_bloqueados').select('fecha');
+      final bloqueadosData = await db.getDiasBloqueados();
       final Set<String> bloqueadosFechas = {};
       for (var row in bloqueadosData) {
         if (row['fecha'] != null) {
@@ -177,7 +178,7 @@ class _PanelTecnicoCalendarioScreenState extends State<PanelTecnicoCalendarioScr
         _diasBloqueadosTotales = bloqueadosFechas;
       });
 
-      final reservasData = await supabase.from('reservas').select('id, fecha, aula, hora_inicio, nombre_cliente, estado, uso');
+      final reservasData = await db.getReservas();
       _procesarReservas(reservasData);
     } catch (e) {
       if (mounted) setState(() => _cargando = false);
@@ -186,9 +187,8 @@ class _PanelTecnicoCalendarioScreenState extends State<PanelTecnicoCalendarioScr
 
   // --- SUSCRIPCIÓN A CAMBIOS EN TIEMPO REAL (Reservas) ---
   void _suscribirseACambios() {
-    _reservasSubscription = supabase
-        .from('reservas')
-        .stream(primaryKey: ['id'])
+    _reservasSubscription = db
+        .streamReservas()
         .listen((List<Map<String, dynamic>> reservas) {
           _procesarReservas(reservas);
         }, onError: (e) {
@@ -202,9 +202,8 @@ class _PanelTecnicoCalendarioScreenState extends State<PanelTecnicoCalendarioScr
 
   // --- SUSCRIPCIÓN A CAMBIOS EN TIEMPO REAL (Días Bloqueados) ---
   void _suscribirseABloqueados() {
-    _bloqueadosSubscription = supabase
-        .from('dias_bloqueados')
-        .stream(primaryKey: ['fecha'])
+    _bloqueadosSubscription = db
+        .streamDiasBloqueados()
         .listen((List<Map<String, dynamic>> bloqueados) {
           if (!mounted) return;
           final Set<String> bloqueadosFechas = {};
@@ -222,7 +221,7 @@ class _PanelTecnicoCalendarioScreenState extends State<PanelTecnicoCalendarioScr
   // --- ACTUALIZAR ESTADO DE RESERVA ---
   Future<void> _cambiarEstadoReserva(dynamic id, String nuevoEstado) async {
     try {
-      await supabase.from('reservas').update({'estado': nuevoEstado}).match({'id': id});
+      await db.actualizarEstadoReserva(id, nuevoEstado);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Estado actualizado a $nuevoEstado 🛠️'), backgroundColor: Colors.blue),
       );

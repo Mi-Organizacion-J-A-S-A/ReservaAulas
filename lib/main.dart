@@ -1,27 +1,28 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_localizations/flutter_localizations.dart'; // <--- NUEVO
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // <--- NUEVO
 import 'package:shared_preferences/shared_preferences.dart';
 import 'profesor_screen.dart';
 import 'tecnico_screen.dart';
+import 'database_repository.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  final String configString = await rootBundle.loadString('assets/config.json');
-  final Map<String, dynamic> config = jsonDecode(configString);
+  // --- CARGA DE VARIABLES DE ENTORNO ---
+  await dotenv.load(fileName: ".env");
 
+  // Inicialización de Supabase con los datos del .env
   await Supabase.initialize(
-    url: config['supabaseUrl'] ?? '',  
-    anonKey: config['supabaseAnonKey'] ?? '',  
+    url: dotenv.env['SUPABASE_URL'] ?? '',  
+    anonKey: dotenv.env['SUPABASE_ANON_KEY'] ?? '',  
   );
 
   runApp(const ReservaAulasApp());
 }
 
-final supabase = Supabase.instance.client;
+final DatabaseRepository db = SupabaseRepository();
 
 class ReservaAulasApp extends StatelessWidget {
   const ReservaAulasApp({super.key});
@@ -190,9 +191,9 @@ class _TecnicoLoginScreenState extends State<TecnicoLoginScreen> {
     setState(() => _cargando = true);
 
     try {
-      final response = await supabase.auth.signInWithPassword(email: email, password: password);
+      await db.loginTecnico(email, password);
 
-      if (response.user != null && mounted) {
+      if (mounted) {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const PanelTecnicoCalendarioScreen()),

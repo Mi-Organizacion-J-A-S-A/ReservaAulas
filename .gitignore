@@ -5,6 +5,7 @@
 *.log
 *.pyc
 *.swp
+.env
 .DS_Store
 .atom/
 .build/
@@ -51,4 +52,5 @@ app.*.map.json
 /macos
 /web
 /windows
+/supabase
 

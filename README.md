@@ -9,8 +9,11 @@ Existen dos tipos principales de usuarios:
 ## Empezar
 Compilar en linux:
 $ flutter run -d linux
+
 crear el fichero apk:
+
 $ flutter build apk
+
 # Dudas
 Por favor utilice el sistema de gestión de incidencias de Github.com (ya tengo bastante saturado el correo electrónico)
 

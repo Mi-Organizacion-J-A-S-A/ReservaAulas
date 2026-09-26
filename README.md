@@ -7,6 +7,7 @@ Existen dos tipos principales de usuarios:
 
 
 ## Empezar
+Lea Configuracion.md
 Compilar en linux:
 $ flutter run -d linux
 
